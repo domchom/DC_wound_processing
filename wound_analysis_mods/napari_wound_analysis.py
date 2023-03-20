@@ -1,8 +1,10 @@
-import numpy as np
-from matplotlib.patches import Ellipse
-import tifffile
+
 import os
 import napari
+import tifffile
+import numpy as np
+from matplotlib.patches import Ellipse
+
 
 class EllipseCreation:
 
@@ -83,6 +85,27 @@ class EllipseCreation:
                 self.all_images[filename] = [value, line_coords]
 
         return self.all_images
+    
+    def user_define_ellipse(self, filename_path):
+        """
+        Opens an image specified by the image path, displays it in a napari viewer, and allows the user to draw an ellipse.
+        The function then saves the dimensions of the ellipse and closes the viewer.
+
+        Args:
+        filename_path (str): Path to the image file to be opened.
+
+        Returns:
+        list: A list of line coordinates, where each line is a list of x and y coordinates.
+        """
+        # asking the user to identify the ring of interest
+        with napari.gui_qt():
+            viewer = napari.Viewer()
+            viewer.open(filename_path)
+
+            napari.run()
+
+            @self.key_bindings.add_function("shift-s")
+            save_shape(viewer)
 
     def save_shape(self, viewer):
         last_shape = viewer.layers['Shapes'].data[-1]
@@ -110,7 +133,7 @@ class EllipseCreation:
                 # Create an array of points on the large ellipse
                 theta = np.linspace(0, 2 * np.pi, self.num_lines)
                 points = np.stack([large_ellipse.center[0] + large_ellipse.width/2*np.cos(theta),
-                                   large_ellipse.center[1] + large_ellipse.height/2*np.sin(theta)], axis=1)
+                                    large_ellipse.center[1] + large_ellipse.height/2*np.sin(theta)], axis=1)
 
                 # Loop over each point on the large ellipse and calculate the shortest distance to the small ellipse and line segment
                 self.line_coords = [[np.linspace(x0, x1, self.bin_num), np.linspace(y0, y1, self.bin_num)]
@@ -125,36 +148,5 @@ class EllipseCreation:
 
         self.line_coords = np.array(self.line_coords)
 
-        return self.line_coords
-
-    def user_define_ellipse(self, filename_path):
-        """
-        Opens an image specified by the image path, displays it in a napari viewer, and allows the user to draw an ellipse.
-        The function then saves the dimensions of the ellipse and closes the viewer.
-
-        Args:
-        filename_path (str): Path to the image file to be opened.
-
-        Returns:
-        list: A list of line coordinates, where each line is a list of x and y coordinates.
-        """
-        # asking the user to identify the ring of interest
-        with napari.gui_qt():
-            ellipse_data = np.array(
-                [[350, 190], [350, 310], [190, 310], [190, 190]])
-            viewer = napari.Viewer()
-            viewer.open(filename_path)
-
-            ellipse_layer = viewer.add_shapes(
-                data=[ellipse_data],
-                shape_type='ellipse',
-                edge_color='red',
-                edge_width=2,
-                face_color='transparent',
-            )
-
-            self.save_shape(viewer)
-
-            napari.run()
-
-        return self.save_shape(viewer)
+        return self.line_coords             
+        

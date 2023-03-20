@@ -1,12 +1,14 @@
 import os
 import sys
 import timeit
+import napari
 import datetime
+import tifffile
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from wound_analysis_mods.napari_wound_analysis import EllipseCreation
+from matplotlib.patches import Ellipse
 from wound_analysis_mods.processor_wound_analysis import ImageProcessor
 from wound_analysis_mods.gui_wound_analysis import BaseGUI
 
@@ -121,13 +123,9 @@ def main():
     # column headers to use with summary data during conversion to dataframe
     col_headers = []
 
-    # creating the ellipses
-    print('Create Ellipses')
-
-    all_images_line_coords = EllipseCreation(
-        folder_path=folder_path, num_lines=num_lines, line_length=line_length, bin_num=bin_num)
-    all_images_line_coords = all_images_line_coords.create_ellipses()
-
+    #open the images and create the ellipses. Save coordinates of the ellipses for each movie
+    all_images = convert_images(folder_path)
+    all_images_line_coords = create_ellipses(all_images,line_length,num_lines,bin_num)
 
     # processing movies
     with tqdm(total=len(file_names)) as pbar:
@@ -251,6 +249,174 @@ def main():
         # log parameters and errors
         make_log(main_save_path, log_params)
         print('Done with Script!')
+
+def convert_images(folder_path):
+    """
+    Reads all TIFF images from the folder specified in the object's folder_path attribute and standardizes their dimensions
+    by reshaping them into a 5D numpy array of shape (num_frames, num_slices, num_channels, height, width). 
+    
+    If the TIFF file has multiple slices, the images are max projected along the slice axis. The resulting images are stored 
+    in the object's images attribute, which is a dictionary with filename paths as keys and the corresponding numpy arrays as values.
+
+    Returns:
+    A 5D numpy array of shape (num_frames, num_slices, num_channels, height, width)
+    """
+    # dict to store all image {filename_path: [np array as img]}
+    images = {}
+
+    for filename_path in os.listdir(folder_path):
+        if filename_path.endswith('.tif'):
+
+            image = tifffile.imread(filename_path)
+
+            # standardize image dimensions
+            with tifffile.TiffFile(filename_path) as tif_file:
+                metadata = tif_file.imagej_metadata
+            num_channels = metadata.get('channels', 1)
+            num_slices = metadata.get('slices', 1)
+            num_frames = metadata.get('frames', 1)
+            image = image.reshape(num_frames,
+                                    num_slices,
+                                    num_channels, 
+                                    image.shape[-1],  # columns
+                                    image.shape[-2])  # rows
+
+            # max project image stack if num_slices > 1
+            if num_slices > 1:
+                print(f'Max projecting image stack')
+                image = np.max(image, axis=1)
+                num_slices = 1
+                image = image.reshape(num_frames,
+                                                num_slices,
+                                                num_channels,
+                                                image.shape[-1],  # columns
+                                                image.shape[-2])  # rows
+
+            images[filename_path] = image
+
+    return images
+
+def create_ellipses(all_images,line_length,num_lines,bin_num):
+    """
+    For each image in the provided dictionary, opens a napari viewer and prompts the user to draw an ellipse
+    on the image.
+    The ellipse dimensions are then saved to the dictionary under the corresponding filename key, as a list 
+    of line coordinates.
+    If the key already has a value, the new line coordinates are appended to the existing list.
+
+    Args:
+    all_images: A dictionary containing filename keys and np array img values.
+
+    Returns:
+    A dictionary where each key is a filename and the corresponding value is a list of line coordinates for 
+        the ellipse drawn on that image. [np array, line coords]
+    """
+    for filename_path in all_images:
+        # the user will create the ellipse in napari for the given image
+        last_shape = user_define_ellipse(filename_path)
+        line_coords = calc_ellipse_lines(last_shape,line_length,num_lines,bin_num)
+        if filename_path in all_images:
+            value = all_images[filename_path]
+            all_images[filename_path] = [value, line_coords]
+
+    return all_images
+
+def user_define_ellipse(filename_path):
+    """
+    Opens an image specified by the image path, displays it in a napari viewer, and allows the user to draw an ellipse.
+    The function then saves the dimensions of the ellipse and closes the viewer.
+
+    Args:
+    filename_path (str): Path to the image file to be opened.
+
+    Returns:
+    list: A list of line coordinates, where each line is a list of x and y coordinates.
+    """
+    # asking the user to identify the ring of interest
+    with napari.gui_qt():
+        filename = filename_path.split('/')[-1]
+        viewer = napari.Viewer(title=f'Create ellipse for {filename}. Close window to save ellipse')
+        viewer.open(filename_path)
+
+        #ellipse = np.array([[156, 165], [156, 368], [373, 368], [373, 165]])
+        shapes_layer = viewer.add_shapes()
+
+        @viewer.bind_key('s')
+        def save_and_close(viewer):
+            last_shape = viewer.layers['Shapes'].data[-1]
+            viewer.window.close()
+
+            return last_shape
+        
+        napari.run()
+    
+        return save_and_close(viewer) #return the ellipse coords
+            
+def calc_ellipse_lines(last_shape,line_length,num_lines,bin_num):
+    if last_shape is not None:
+        # Extract x coords and y coords of the ellipse as column vectors
+        X = last_shape[:,1:]
+        Y = last_shape[:,0:1]
+
+        # Formulate and solve the least squares problem ||Ax - b ||^2
+        A = np.hstack([X**2, X * Y, Y**2, X, Y])
+        b = np.ones_like(X)
+        x = np.linalg.lstsq(A, b)[0].squeeze()
+        
+        '''#plot the original datapoints
+        plt.legend(loc='upper right', fontsize='small', ncol=3)
+        plt.tight_layout()
+        plt.scatter(X, Y, label='Data Points')'''
+
+        #plot the fitted ellipse
+        x_coord = np.linspace(0,511,num_lines)
+        y_coord = np.linspace(0,511,num_lines)
+        X_coord, Y_coord = np.meshgrid(x_coord, y_coord)
+        Z_coord = x[0] * X_coord ** 2 + x[1] * X_coord * Y_coord + x[2] * Y_coord**2 + x[3] * X_coord + x[4] * Y_coord
+        plt.contour(X_coord, Y_coord, Z_coord, levels=[1], colors=('r'), linewidths=2)                   
+
+        plt.show()
+
+
+        '''
+        # Define the rectangle's coordinates
+        x1, y1 = last_shape[0][0], last_shape[0][1]
+        x2, y2 = last_shape[2][0], last_shape[2][1]
+
+        # Calculate the center and ratio
+        center = [(x1 + x2) / 2, (y1 + y2) / 2]
+        ratio = abs(y2 - y1) / abs(x2 - x1)
+
+        # Define the two ellipses
+        small_ellipse_width = 2
+        small_ellipse_height = small_ellipse_width * ratio
+        large_ellipse_width = small_ellipse_width + (line_length * 2)
+        large_ellipse_height = small_ellipse_height + (line_length * 2)
+
+        small_ellipse = Ellipse(xy=(center[0], center[1]), width=small_ellipse_width, height=small_ellipse_height, angle=0)
+        large_ellipse = Ellipse(xy=(center[0], center[1]), width=large_ellipse_width, height=large_ellipse_height, angle=0)
+
+
+
+        theta = np.linspace(0, 2 * np.pi, num_lines)
+        points = np.stack([large_ellipse.center[0] + large_ellipse.width/2*np.cos(theta),
+                            large_ellipse.center[1] + large_ellipse.height/2*np.sin(theta)], axis=1)
+
+        # Loop over each point on the large ellipse and calculate the shortest distance to the small ellipse and line segment
+        line_coords = [[np.linspace(x0, x1, bin_num), np.linspace(y0, y1, bin_num)]
+                            for i, point in enumerate(points)
+                            if (distance := np.linalg.norm(small_ellipse.center - point) - small_ellipse_width / 2) >= 0
+                            for theta in [np.arctan2(point[1] - large_ellipse.center[1], point[0] - large_ellipse.center[0])]
+                            for x0, y0, x1, y1 in [[point[0], point[1],small_ellipse.center[0] + small_ellipse_width / 2 * np.cos(theta),
+                                small_ellipse.center[1] + small_ellipse_height / 2 * np.sin(theta)]]]
+        '''
+    
+    else:
+        print('No ellipse has been drawn yet')
+
+    line_coords = np.array(line_coords)
+
+    return line_coords         
 
 if __name__ == '__main__':
     main()

@@ -20,9 +20,9 @@ class BaseGUI(tk.Tk):
         self.num_lines = tk.IntVar()
         self.num_lines.set(36)
         self.line_length = tk.IntVar()
-        self.line_length.set(150)
+        self.line_length.set(200)
         self.bin_num = tk.IntVar()
-        self.bin_num.set(150)
+        self.bin_num.set(200)
         self.frame_rate = tk.StringVar()
         self.pixel_size = tk.StringVar()
         self.Ch1 = tk.StringVar()
@@ -32,7 +32,7 @@ class BaseGUI(tk.Tk):
         self.plot_ref_fig.set(True)
 
         self.plot_linescan_movie = tk.BooleanVar()
-        self.plot_linescan_movie.set(True)
+        self.plot_linescan_movie.set(False)
 
         self.plot_mean_CCFs = tk.BooleanVar()
         self.plot_mean_CCFs.set(False)
@@ -167,6 +167,7 @@ class BaseGUI(tk.Tk):
         self.plot_ind_CCFs = self.plot_ind_CCFs.get()
         self.plot_ind_peaks = self.plot_ind_peaks.get()
         self.folder_path = self.folder_path.get()
+        self.plot_linescan_movie = self.plot_linescan_movie.get()
         
         # destroy the widget
         self.destroy()
