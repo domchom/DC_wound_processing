@@ -27,7 +27,8 @@ class ImageProcessor:
         self.bin_num = len(line_coords[0][0])
         self.bin_length_pixels = (self.line_length / self.bin_num) * self.pixel_size
         self.line_length_pixels = self.bin_length_pixels * self.bin_num
-                
+        self.num_ROIs = len(self.line_coords)
+
         self.indv_line_values, self.x_values = self.calc_indv_line_values()
 
     def calc_indv_line_values(self):

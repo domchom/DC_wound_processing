@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from wound_analysis_mods.processor_wound_analysis import ImageProcessor
+from wound_analysis_mods.processor_wound_analysis_ROIs import ImageProcessor
 from wound_analysis_mods.gui_wound_analysis import BaseGUI
 
 #set the behavior for two types of errors: divide-by-zero and invalid arithmetic operations 
@@ -64,28 +64,10 @@ def convert_images(folder_path):
 
     return images       
 
-def create_ellipses(all_images,line_length,num_lines,bin_num):
-    """
-    Given a dictionary of image paths as keys and their corresponding shapes as values,
-    prompts the user to define an ellipse in napari for each image, and then creates a set
-    of lines of length `line_length` emanating from the ellipse in `num_lines` equally
-    spaced directions. The lines are discretized into `bin_num` points. Returns the
-    updated dictionary of image paths and their shapes, with the additional set of lines
-    stored as a numpy array in the value.
-
-    Parameters:
-    all_images: A dictionary of image paths as keys and their corresponding shapes as values.
-    line_length: The length of each line emanating from the ellipse.
-    num_lines: The number of lines to create emanating from the ellipse.
-    bin_num: The number of points to discretize each line into.
-
-    Returns:
-    dict: The updated dictionary of image paths and their shapes, with the additional set of
-        lines stored as a numpy array in the value.
-    """
+def create_ellipses_and_ROIs(all_images,line_length,num_lines,bin_num):
     for filename_path in all_images:
         # the user will create the ellipse in napari for the given image
-        last_shape = user_define_ellipse(filename_path)
+        last_shape, rois = user_define_ellipse_with_ROIs(filename_path)
 
         # convert the coordinates to integers
         last_shape = last_shape.astype(int)
@@ -107,11 +89,11 @@ def create_ellipses(all_images,line_length,num_lines,bin_num):
 
         # Calculate the dimensions of smaller ellipse
         large_axes = large_ellipse[1]
-        small_axes = (large_maj_axis - line_length, large_min_axis - line_length)
+        small_axes = (large_maj_axis - line_length + 40, large_min_axis - line_length + 40)
 
         # Iterate over the larger ellipse and find the closest point on the smaller ellipse
         line_coords = []
-        for angle in np.linspace(0, 360, num_lines, endpoint=False):
+        for angle in range(0, 360, int(360 / num_lines)):
             # Get the point on the larger ellipse
             x = int(center[0] + large_axes[0] * np.cos(angle * np.pi / 180))
             y = int(center[1] + large_axes[1] * np.sin(angle * np.pi / 180))
@@ -130,26 +112,30 @@ def create_ellipses(all_images,line_length,num_lines,bin_num):
 
         line_coords = np.array(line_coords)
 
+        # Create a list to hold the line arrays
+        roi_line_arrays = []
+
+        # Iterate over the ROIs and lines
+        for roi in rois:
+            # Create an empty list to hold the lines in this ROI
+            roi_lines = []
+
+            # Iterate over the lines and add the ones that are in the ROI to the list
+            for line in line_coords:
+                if is_line_in_roi(line, roi):
+                    roi_lines.append(line)
+
+            # Convert the list of lines to a NumPy array and append it to the list of ROI line arrays
+            roi_line_arrays.append(np.array(roi_lines))
+
         #add the ellipse coordinates to dictionary
         if filename_path in all_images:
             value = all_images[filename_path]
-            all_images[filename_path] = [value, line_coords]
+            all_images[filename_path] = [value, roi_line_arrays]
 
     return all_images
 
-def user_define_ellipse(filename_path):
-    """
-    Opens a Napari viewer for the given image file and prompts the user to define an ellipse by
-    tracing a polygon around it. The function returns the coordinates of the polygon vertices,
-    which are subsequently used to fit an ellipse to the polygon.
-
-    Parameters:
-    filename_path (string): The path to the image file to be opened in the Napari viewer.
-
-    Returns:
-    numpy.ndarray: The coordinates of the polygon vertices as a numpy array of shape (n, 2), 
-        where n is the number of vertices.
-    """
+def user_define_ellipse_with_ROIs(filename_path):
     # asking the user to identify the ring of interest
     filename = filename_path.split('/')[-1]
     viewer = napari.Viewer(title=f'Trace a polygon for {filename}. Press "s" to save and close the window')
@@ -158,15 +144,80 @@ def user_define_ellipse(filename_path):
     shapes_layer = viewer.add_shapes()#time saving to automatically create the shapes layer
 
     @viewer.bind_key('s')
-    def save_and_close(viewer):
+    def save_and_close_ROIs(viewer):
         last_shape = viewer.layers['Shapes'].data[0]
+
+        rois = []
+        for shape in viewer.layers['Shapes'].data[1:]:
+            rois.append(shape)
+
         viewer.window.close()
 
-        return last_shape
+        return last_shape, rois
     
     napari.run()
 
-    return save_and_close(viewer) #return the polygon vertices coordinates
+    return save_and_close_ROIs(viewer) #return the polygon vertices coordinates
+
+def is_line_in_roi(line, roi):
+    """
+    Check if a linspace line is entirely within a ROI.
+
+    Parameters:
+    -----------
+    line: np.ndarray
+        A 2D numpy array with shape (2, n) representing the x and y coordinates of the line.
+    roi: np.ndarray
+        A 2D numpy array with shape (n, 2) representing the x and y coordinates of the ROI.
+
+    Returns:
+    --------
+    bool
+        True if the line is entirely within the ROI, False otherwise.
+    """
+    # Check if each point of the line is within the ROI
+    for i in range(line.shape[1]):
+        point = line[:, i]
+        if not is_point_in_roi(point, roi):
+            return False
+    
+    return True
+
+def is_point_in_roi(point, roi):
+    """
+    Check if a point is within a ROI.
+
+    Parameters:
+    -----------
+    point: np.ndarray
+        A 1D numpy array with shape (2,) representing the x and y coordinates of the point.
+    roi: np.ndarray
+        A 2D numpy array with shape (n, 2) representing the x and y coordinates of the ROI.
+
+    Returns:
+    --------
+    bool
+        True if the point is within the ROI, False otherwise.
+    """
+    # Adapted from the ray casting algorithm
+    intersections = 0
+    n = roi.shape[0]
+    for i in range(n):
+        a = roi[i]
+        b = roi[(i + 1) % n]
+        if a[1] == b[1]:
+            continue
+        if point[1] < min(a[1], b[1]):
+            continue
+        if point[1] >= max(a[1], b[1]):
+            continue
+        x_intersect = (point[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1]) + a[0]
+        if x_intersect > point[0]:
+            intersections += 1
+    if intersections % 2 == 0:
+        return False
+    else:
+        return True
 
 ####################################################################################################################################
 ####################################################################################################################################
@@ -287,7 +338,7 @@ def main():
 
     #open the images and create the ellipses. Save coordinates of the ellipses for each movie
     all_images = convert_images(folder_path)
-    all_images_line_coords = create_ellipses(all_images,line_length,num_lines,bin_num)
+    all_images_w_ROI_line_coords = create_ellipses_and_ROIs(all_images,line_length,num_lines,bin_num)
 
     # processing movies
     with tqdm(total=len(file_names)) as pbar:
@@ -306,8 +357,8 @@ def main():
 
             # Initialize the processor
             processor = ImageProcessor(filename=file_name, im_save_path=im_save_path,
-                                    img=all_images_line_coords[file_name][0],
-                                    line_coords=all_images_line_coords[file_name][1],
+                                    img=all_images_w_ROI_line_coords[file_name][0],
+                                    line_coords=all_images_w_ROI_line_coords[file_name][1],
                                     line_length=line_length,
                                     Ch1=Ch1,
                                     Ch2=Ch2,

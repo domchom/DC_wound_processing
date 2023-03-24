@@ -32,7 +32,7 @@ class BaseGUI(tk.Tk):
         self.plot_ref_fig.set(True)
 
         self.plot_linescan_movie = tk.BooleanVar()
-        self.plot_linescan_movie.set(False)
+        self.plot_linescan_movie.set(True)
 
         self.plot_mean_CCFs = tk.BooleanVar()
         self.plot_mean_CCFs.set(False)
@@ -54,7 +54,7 @@ class BaseGUI(tk.Tk):
         self.file_path_button = ttk.Button(self, text = 'Select folder')
 
         # make a default path
-        self.folder_path.set('/Users/domchom/Desktop/example_movies')
+        self.folder_path.set('/Users/domchom/Desktop/examples')
         self.file_path_button['command'] = self.get_folder_path
         self.file_path_button.grid(row = 0, column = 1, padx = 10, sticky = 'W')        
 
