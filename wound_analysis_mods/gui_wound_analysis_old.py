@@ -27,9 +27,6 @@ class BaseGUI(tk.Tk):
         self.pixel_size = tk.StringVar()
         self.Ch1 = tk.StringVar()
         self.Ch2 = tk.StringVar()
-        
-        self.create_diff_ROIs = tk.BooleanVar()
-        self.create_diff_ROIs.set(True)
 
         self.plot_ref_fig = tk.BooleanVar()
         self.plot_ref_fig.set(True)
@@ -57,7 +54,7 @@ class BaseGUI(tk.Tk):
         self.file_path_button = ttk.Button(self, text = 'Select folder')
 
         # make a default path
-        self.folder_path.set('/Users/domchom/Desktop/wound_heal_examples')
+        self.folder_path.set('/Users/domchom/Desktop/examples')
         self.file_path_button['command'] = self.get_folder_path
         self.file_path_button.grid(row = 0, column = 1, padx = 10, sticky = 'W')        
 
@@ -116,12 +113,6 @@ class BaseGUI(tk.Tk):
         self.plot_mean_peaks_label = ttk.Label(self, text = 'Plot summary peaks')
         self.plot_mean_peaks_label.grid(row = 9, column = 1, padx = 10, sticky = 'W')
 
-        # create checkbox for including ROIs
-        self.create_diff_ROIs_checkbox = ttk.Checkbutton(self, variable = self.create_diff_ROIs)
-        self.create_diff_ROIs_checkbox.grid(row = 7, column = 2, padx = 10, sticky = 'E')
-        self.create_diff_ROIs_label = ttk.Label(self, text = 'Create different ROIs')
-        self.create_diff_ROIs_label.grid(row = 7, column = 3, padx = 10, sticky = 'W')
-
         # create checkbox for plotting individual CCFs
         self.plot_ind_CCFs_checkbox = ttk.Checkbutton(self, variable = self.plot_ind_CCFs)
         self.plot_ind_CCFs_checkbox.grid(row = 8, column = 2, padx = 10, sticky = 'E')
@@ -177,7 +168,6 @@ class BaseGUI(tk.Tk):
         self.plot_ind_peaks = self.plot_ind_peaks.get()
         self.folder_path = self.folder_path.get()
         self.plot_linescan_movie = self.plot_linescan_movie.get()
-        self.create_diff_ROIs = self.create_diff_ROIs.get()
         
         # destroy the widget
         self.destroy()

@@ -64,6 +64,10 @@ def convert_images(folder_path):
 
     return images       
 
+##########################################
+##########    NO ROIs    #################
+##########################################
+
 def create_ellipses(all_images,line_length,num_lines,bin_num):
     """
     Given a dictionary of image paths as keys and their corresponding shapes as values,
@@ -168,6 +172,214 @@ def user_define_ellipse(filename_path):
 
     return save_and_close(viewer) #return the polygon vertices coordinates
 
+##########################################
+##########       ROIs    #################
+##########################################
+
+def create_ellipses_and_ROIs(all_images,line_length,num_lines,bin_num):
+    """
+    Given a dictionary of image paths as keys and their corresponding shapes as values,
+    prompts the user to define an ellipse in napari for each image, and then creates a set
+    of lines of length `line_length` emanating from the ellipse in `num_lines` equally
+    spaced directions. The lines are discretized into `bin_num` points. Returns the
+    updated dictionary of image paths and their shapes, with the additional set of lines
+    stored as a numpy array in the value. It then checks which lines are contained in each ROI
+    created. If it is fully in the ROI, it is then assigned to that ROI. It also created a 
+    cropped image for each ROI, and saves that cropped image. 
+
+    Parameters:
+    all_images: A dictionary of image paths as keys and their corresponding shapes as values.
+    line_length: The length of each line emanating from the ellipse.
+    num_lines: The number of lines to create emanating from the ellipse.
+    bin_num: The number of points to discretize each line into.
+
+    Returns:
+    dict: The updated dictionary of image paths and their shapes, with the cropped ROIS, and the 
+        additional set of lines for each ROI stored as a numpy array in the value.
+    """
+    for filename_path in all_images:
+        # the user will create the ellipse in napari for the given image
+        last_shape, roi_coords = user_define_ellipse_with_ROIs(filename_path)
+
+        # convert the coordinates to integers
+        last_shape = last_shape.astype(int)
+
+        #fit ellipse to the polygon
+        ellipse = cv2.fitEllipse(last_shape)
+
+        # Calculate the dimensions of the fitted ellipse
+        center, axes, rotation = ellipse
+        maj_axis = max(axes)
+        min_axis = min(axes)
+
+        # create a new ellipse that is line_length + 5 tall
+        scale_factor = (line_length + 5) / min_axis
+
+        large_maj_axis = int(maj_axis * scale_factor)
+        large_min_axis = int(min_axis * scale_factor)
+        large_ellipse = (center, (large_maj_axis, large_min_axis), rotation)
+
+        # Calculate the dimensions of smaller ellipse
+        large_axes = large_ellipse[1]
+        small_axes = (large_maj_axis - line_length + 40, large_min_axis - line_length + 40)
+
+        # Iterate over the larger ellipse and find the closest point on the smaller ellipse
+        line_coords = []
+        for angle in range(0, 360, int(360 / num_lines)):
+            # Get the point on the larger ellipse
+            x = int(center[0] + large_axes[0] * np.cos(angle * np.pi / 180))
+            y = int(center[1] + large_axes[1] * np.sin(angle * np.pi / 180))
+
+            # Find the closest point on the smaller ellipse
+            dist = np.sqrt(((x - center[0]) / small_axes[0])**2 + ((y - center[1]) / small_axes[1])**2)
+            closest_x = int(center[0] + small_axes[0] * (x - center[0]) / (dist * axes[0]))
+            closest_y = int(center[1] + small_axes[1] * (y - center[1]) / (dist * axes[1]))
+
+            # Calculate all coordinates along the line
+            line_x = np.linspace(x, closest_x, num=bin_num)
+            line_y = np.linspace(y, closest_y, num=bin_num)
+
+            # Add the list of line coordinates to the list of points
+            line_coords.append([line_x, line_y])
+
+        line_coords = np.array(line_coords)
+
+        # Create a list to hold the line arrays
+        roi_line_arrays = []
+        roi_px_values = []
+
+        for roi in roi_coords:
+            # crop the image using array slicing
+            y1, y2 = int(roi[0][1]), int(roi[2][1])
+            x1, x2 = int(roi[0][0]) , int(roi[2][0])
+
+            x_max, x_min = max(x1, x2), min(x1, x2)
+            y_max, y_min = max(y1, y2), min(y1, y2)
+
+            # reshape array so will work in future
+            roi = np.array([[x_min, y_min], 
+                            [x_min, y_max], 
+                            [x_max, y_max], 
+                            [x_max, y_min]])
+            
+            # Use a list comprehension to filter the lines that are in the ROI
+            roi_lines = np.array([line for line in line_coords if is_line_in_roi(line, roi)])
+
+            # adjust the lines so the coordinates align with the coordinates of the ROI, and not the original image. Add to list
+            roi_lines[:,0] -= int(x_min)
+            roi_lines[:,1] -= int(y_min)
+            roi_line_arrays.append(roi_lines)
+
+            #crop the image to make the ROI, add to list
+            cropped_image = np.array(all_images[filename_path][:,:,:,x_min:x_max,y_min:y_max])
+            roi_px_values.append(cropped_image)
+
+        #add the ROIs and the coordinates for the lines in the ROIs to a dictionary
+        if filename_path in all_images:
+            value = all_images[filename_path]
+            all_images[filename_path] = [value, roi_px_values, roi_line_arrays]
+
+    return all_images
+
+def user_define_ellipse_with_ROIs(filename_path):
+    """
+    Opens a Napari viewer for the given image file and prompts the user to define an ellipse by
+    tracing a polygon around it. Then, the user should draw two rectangular ROIs. 
+    The function returns the coordinates of the polygon vertices, which are subsequently used to 
+    fit an ellipse to the polygon. The ROIs vertices are also saved.
+
+    Parameters:
+    filename_path (string): The path to the image file to be opened in the Napari viewer.
+
+    Returns:
+    numpy.ndarray: The coordinates of the polygon vertices as a numpy array of shape (n, 2), 
+        where n is the number of vertices.
+    list: the numpy.ndarrays that contains coordinates of the vertices for each rectangular
+        ROI created. 
+    """
+    # asking the user to identify the ring of interest
+    filename = filename_path.split('/')[-1]
+    viewer = napari.Viewer(title=f'Trace a polygon for {filename}. Press "s" to save and close the window')
+    viewer.open(filename_path)
+
+    shapes_layer = viewer.add_shapes()#time saving to automatically create the shapes layer
+
+    @viewer.bind_key('s')
+    def save_and_close_ROIs(viewer):
+        last_shape = viewer.layers['Shapes'].data[0]
+
+        rois = []
+        for shape in viewer.layers['Shapes'].data[1:]:
+            rois.append(shape)
+
+        viewer.window.close()
+
+        return last_shape, rois
+    
+    napari.run()
+
+    return save_and_close_ROIs(viewer) #return the polygon vertices coordinates
+
+def is_line_in_roi(line, roi):
+    """
+    Check if a linspace line is entirely within a ROI.
+
+    Parameters:
+    -----------
+    line: np.ndarray
+        A 2D numpy array with shape (2, n) representing the x and y coordinates of the line.
+    roi: np.ndarray
+        A 2D numpy array with shape (n, 2) representing the x and y coordinates of the ROI.
+
+    Returns:
+    --------
+    bool
+        True if the line is entirely within the ROI, False otherwise.
+    """
+    # Check if each point of the line is within the ROI
+    for i in range(line.shape[1]):
+        point = line[:, i]
+        if not is_point_in_roi(point, roi):
+            return False
+    
+    return True
+
+def is_point_in_roi(point, roi):
+    """
+    Check if a point is within a ROI.
+
+    Parameters:
+    -----------
+    point: np.ndarray
+        A 1D numpy array with shape (2,) representing the x and y coordinates of the point.
+    roi: np.ndarray
+        A 2D numpy array with shape (n, 2) representing the x and y coordinates of the ROI.
+
+    Returns:
+    --------
+    bool
+        True if the point is within the ROI, False otherwise.
+    """
+    # Adapted from the ray casting algorithm
+    intersections = 0
+    n = roi.shape[0]
+    for i in range(n):
+        a = roi[i]
+        b = roi[(i + 1) % n]
+        if a[1] == b[1]:
+            continue
+        if point[1] < min(a[1], b[1]):
+            continue
+        if point[1] >= max(a[1], b[1]):
+            continue
+        x_intersect = (point[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1]) + a[0]
+        if x_intersect > point[0]:
+            intersections += 1
+    if intersections % 2 == 0:
+        return False
+    else:
+        return True
+
 ####################################################################################################################################
 ####################################################################################################################################
 ####################################################################################################################################
@@ -197,6 +409,7 @@ def main():
     plot_ref_fig = gui.plot_ref_fig
     plot_linescan_movie = gui.plot_linescan_movie
     pixel_size = gui.pixel_size
+    create_diff_ROIs = gui.create_diff_ROIs
     
     # identify and report errors in GUI input
     errors = []
@@ -243,6 +456,7 @@ def main():
                 "Plot Summary Peaks": plot_mean_peaks,
                 "Plot Individual CCFs": plot_ind_CCFs,
                 "Plot Individual Peaks": plot_ind_peaks,  
+                'Plot separate ROIs': create_diff_ROIs,
                 "Files Processed": [],
                 "Files Not Processed": [],
                 'Plotting errors': []
@@ -287,130 +501,266 @@ def main():
 
     #open the images and create the ellipses. Save coordinates of the ellipses for each movie
     all_images = convert_images(folder_path)
-    all_images_line_coords = create_ellipses(all_images,line_length,num_lines,bin_num)
 
-    # processing movies
-    with tqdm(total=len(file_names)) as pbar:
-        pbar.set_description('Files processed:')
-        for file_name in file_names:
-            print('******'*10)
-            print(f'Processing {file_name}...')
+    # if want to plot separate ROIs
+    if create_diff_ROIs:
+        all_images_w_ROI_line_coords = create_ellipses_and_ROIs(all_images,line_length,num_lines,bin_num)
 
-            # name without the extension
-            name_wo_ext = file_name.rsplit(".", 1)[0]
+        # processing movies
+        with tqdm(total=len(file_names)) as pbar:
+            pbar.set_description('Files processed:')
+            for file_name in file_names:
+                m = 0
+                for roi in range(len(all_images_w_ROI_line_coords[file_name][1])):
+                    print('******'*10)
 
-            # create a subfolder within the main save path with the same name as the image file
-            im_save_path = os.path.join(main_save_path, name_wo_ext)
-            if not os.path.exists(im_save_path):
-                os.makedirs(im_save_path)
+                    # name without the extension
+                    name_wo_ext = file_name.rsplit(".", 1)[0]
+                    name_wo_ext = name_wo_ext + f'_roi_{m}'
+                    
+                    print(f'Processing {name_wo_ext}...')
 
-            # Initialize the processor
-            processor = ImageProcessor(filename=file_name, im_save_path=im_save_path,
-                                    img=all_images_line_coords[file_name][0],
-                                    line_coords=all_images_line_coords[file_name][1],
-                                    line_length=line_length,
-                                    Ch1=Ch1,
-                                    Ch2=Ch2,
-                                    frame_rate = frame_rate,
-                                    pixel_size = pixel_size)
+                    # create a subfolder within the main save path with the same name as the image file
+                    im_save_path = os.path.join(main_save_path, name_wo_ext)
+                    if not os.path.exists(im_save_path):
+                        os.makedirs(im_save_path)
 
-            # if file is not skipped, log it and continue
-            log_params['Files Processed'].append(f'{file_name}')
+                    # Initialize the processor
+                    processor = ImageProcessor(filename=f'{name_wo_ext}', im_save_path=im_save_path,
+                                               img=all_images_w_ROI_line_coords[file_name][1][roi],
+                                               line_coords=all_images_w_ROI_line_coords[file_name][2][roi],
+                                               line_length=line_length,
+                                               Ch1=Ch1,
+                                               Ch2=Ch2,
+                                               frame_rate = frame_rate,
+                                               pixel_size = pixel_size)
 
-            # calculate the population signal properties
-            processor.calc_ind_peak_props()
-            if processor.num_channels > 1:
-                processor.calc_indv_CCFs()
+                    # if file is not skipped, log it and continue
+                    log_params['Files Processed'].append(f'{file_name}')
 
-            # calculate the mean signal properties per frame
-            processor.calculate_mean_line_values_per_frame()
+                    # calculate the population signal properties
+                    processor.calc_ind_peak_props()
+                    if processor.num_channels > 1:
+                        processor.calc_indv_CCFs()
 
-            # calculate the population signal properties
-            processor.calc_mean_peak_props()
-            if processor.num_channels > 1:
-                processor.calc_mean_CCF()
+                    # calculate the mean signal properties per frame
+                    processor.calculate_mean_line_values_per_frame()
 
-            # plotting
-            if plot_linescan_movie:
-                processor.create_mean_linescan_per_frame_movie()
+                    # calculate the population signal properties
+                    processor.calc_mean_peak_props()
+                    if processor.num_channels > 1:
+                        processor.calc_mean_CCF()
 
-            if plot_ref_fig:
-                processor.plot_reference_figure()
-                plt.savefig(f'{im_save_path}/{name_wo_ext}_ref.png')
+                    # plotting
+                    if plot_linescan_movie:
+                        processor.create_mean_linescan_per_frame_movie()
 
-            if plot_ind_peaks:
-                ind_peak_plots = processor.plot_ind_peak_props()
-                ind_peak_path = os.path.join(
-                    im_save_path, 'Individual_peak_plots')
-                if not os.path.exists(ind_peak_path):
-                    os.makedirs(ind_peak_path)
-                for plot_name, plot in ind_peak_plots.items():
-                    plot.savefig(f'{ind_peak_path}/{plot_name}.png')
+                    if plot_ref_fig:
+                        processor.plot_reference_figure()
+                        plt.savefig(f'{im_save_path}/{name_wo_ext}_ref.png')
 
-            if plot_ind_CCFs:
-                if processor.num_channels == 1:
-                    log_params[
-                        'Miscellaneous'] = f'CCF plots were not generated for {file_name} because the image only has one channel'
-                ind_ccf_plots = processor.plot_ind_ccfs()
-                ind_ccf_path = os.path.join(
-                    im_save_path, 'Individual_CCF_plots')
-                if not os.path.exists(ind_ccf_path):
-                    os.makedirs(ind_ccf_path)
-                for plot_name, plot in ind_ccf_plots.items():
-                    plot.savefig(f'{ind_ccf_path}/{plot_name}.png')
+                    if plot_ind_peaks:
+                        ind_peak_plots = processor.plot_ind_peak_props()
+                        ind_peak_path = os.path.join(
+                            im_save_path, 'Individual_peak_plots')
+                        if not os.path.exists(ind_peak_path):
+                            os.makedirs(ind_peak_path)
+                        for plot_name, plot in ind_peak_plots.items():
+                            plot.savefig(f'{ind_peak_path}/{plot_name}.png')
 
-            if plot_mean_CCFs:
-                mean_ccf_plots = processor.plot_mean_CCF()
-                mean_ccf_path = os.path.join(
-                    im_save_path, 'Mean_CCF_plots')
-                if not os.path.exists(mean_ccf_path):
-                    os.makedirs(mean_ccf_path)
-                for plot_name, plot in mean_ccf_plots.items():
-                    plot.savefig(f'{mean_ccf_path}/{plot_name}.png')
+                    if plot_ind_CCFs:
+                        if processor.num_channels == 1:
+                            log_params[
+                                'Miscellaneous'] = f'CCF plots were not generated for {file_name} because the image only has one channel'
+                        ind_ccf_plots = processor.plot_ind_ccfs()
+                        ind_ccf_path = os.path.join(
+                            im_save_path, 'Individual_CCF_plots')
+                        if not os.path.exists(ind_ccf_path):
+                            os.makedirs(ind_ccf_path)
+                        for plot_name, plot in ind_ccf_plots.items():
+                            plot.savefig(f'{ind_ccf_path}/{plot_name}.png')
 
-            if plot_mean_peaks:
-                mean_peak_plots = processor.plot_mean_peak_props()
-                mean_peaks_path = os.path.join(
-                    im_save_path, 'Mean_peak_plots')
-                if not os.path.exists(mean_peaks_path):
-                    os.makedirs(mean_peaks_path)
-                for plot_name, plot in mean_peak_plots.items():
-                    plot.savefig(f'{mean_peaks_path}/{plot_name}.png')
+                    if plot_mean_CCFs:
+                        mean_ccf_plots = processor.plot_mean_CCF()
+                        mean_ccf_path = os.path.join(
+                            im_save_path, 'Mean_CCF_plots')
+                        if not os.path.exists(mean_ccf_path):
+                            os.makedirs(mean_ccf_path)
+                        for plot_name, plot in mean_ccf_plots.items():
+                            plot.savefig(f'{mean_ccf_path}/{plot_name}.png')
 
-            # Summarize the data for current image as dataframe, and save as .csv
-            im_measurements_df = processor.organize_measurements()
-            im_measurements_df.to_csv(
-                f'{im_save_path}/{name_wo_ext}_measurements.csv', index=False)
+                    if plot_mean_peaks:
+                        mean_peak_plots = processor.plot_mean_peak_props()
+                        mean_peaks_path = os.path.join(
+                            im_save_path, 'Mean_peak_plots')
+                        if not os.path.exists(mean_peaks_path):
+                            os.makedirs(mean_peaks_path)
+                        for plot_name, plot in mean_peak_plots.items():
+                            plot.savefig(f'{mean_peaks_path}/{plot_name}.png')
 
-            # generate summary data for current image
-            im_summary_dict = processor.summarize_image(
-                file_name=file_name)
+                    # Summarize the data for current image as dataframe, and save as .csv
+                    im_measurements_df = processor.organize_measurements()
+                    im_measurements_df.to_csv(
+                        f'{im_save_path}/{name_wo_ext}_measurements.csv', index=False)
 
-            # populate column headers list with keys from the measurements dictionary
-            for key in im_summary_dict.keys():
-                if key not in col_headers:
-                    col_headers.append(key)
+                    # generate summary data for current image
+                    im_summary_dict = processor.summarize_image(
+                        file_name=file_name)
 
-            # append summary data to the summary list
-            summary_list.append(im_summary_dict)
+                    # populate column headers list with keys from the measurements dictionary
+                    for key in im_summary_dict.keys():
+                        if key not in col_headers:
+                            col_headers.append(key)
 
-            # useless progress bar to force completion of previous bars
-            with tqdm(total=10, miniters=1) as dummy_pbar:
-                dummy_pbar.set_description('cleanup:')
-                for i in range(10):
-                    dummy_pbar.update(1)
+                    # append summary data to the summary list
+                    summary_list.append(im_summary_dict)
 
-            pbar.update(1)
+                    # useless progress bar to force completion of previous bars
+                    with tqdm(total=10, miniters=1) as dummy_pbar:
+                        dummy_pbar.set_description('cleanup:')
+                        for i in range(10):
+                            dummy_pbar.update(1)
+                    
+                    m += 1
+                    pbar.update(1)
 
-        # create dataframe from summary list
-        summary_df = pd.DataFrame(summary_list, columns=col_headers)
-        summary_df.to_csv(f'{main_save_path}/summary.csv', index=False)
+            # create dataframe from summary list
+            summary_df = pd.DataFrame(summary_list, columns=col_headers)
+            summary_df.to_csv(f'{main_save_path}/summary.csv', index=False)
 
-        end = timeit.default_timer()
-        log_params["Time Elapsed"] = f"{end - start:.2f} seconds"
-        # log parameters and errors
-        make_log(main_save_path, log_params)
-        print('Done with Script!')
+            end = timeit.default_timer()
+            log_params["Time Elapsed"] = f"{end - start:.2f} seconds"
+            # log parameters and errors
+            make_log(main_save_path, log_params)
+            print('Done with Script!')
+
+    # if do not want to plot separate ROIs
+    else:
+        # for non ROI selection workflow            
+        all_images_line_coords = create_ellipses(all_images,line_length,num_lines,bin_num)
+
+        # processing movies
+        with tqdm(total=len(file_names)) as pbar:
+            pbar.set_description('Files processed:')
+            for file_name in file_names:
+                print('******'*10)
+                print(f'Processing {file_name}...')
+
+                # name without the extension
+                name_wo_ext = file_name.rsplit(".", 1)[0]
+
+                # create a subfolder within the main save path with the same name as the image file
+                im_save_path = os.path.join(main_save_path, name_wo_ext)
+                if not os.path.exists(im_save_path):
+                    os.makedirs(im_save_path)
+
+                # Initialize the processor
+                processor = ImageProcessor(filename=file_name, im_save_path=im_save_path,
+                                        img=all_images_line_coords[file_name][0],
+                                        line_coords=all_images_line_coords[file_name][1],
+                                        line_length=line_length,
+                                        Ch1=Ch1,
+                                        Ch2=Ch2,
+                                        frame_rate = frame_rate,
+                                        pixel_size = pixel_size)
+
+                # if file is not skipped, log it and continue
+                log_params['Files Processed'].append(f'{file_name}')
+
+                # calculate the population signal properties
+                processor.calc_ind_peak_props()
+                if processor.num_channels > 1:
+                    processor.calc_indv_CCFs()
+
+                # calculate the mean signal properties per frame
+                processor.calculate_mean_line_values_per_frame()
+
+                # calculate the population signal properties
+                processor.calc_mean_peak_props()
+                if processor.num_channels > 1:
+                    processor.calc_mean_CCF()
+
+                # plotting
+                if plot_linescan_movie:
+                    processor.create_mean_linescan_per_frame_movie()
+
+                if plot_ref_fig:
+                    processor.plot_reference_figure()
+                    plt.savefig(f'{im_save_path}/{name_wo_ext}_ref.png')
+
+                if plot_ind_peaks:
+                    ind_peak_plots = processor.plot_ind_peak_props()
+                    ind_peak_path = os.path.join(
+                        im_save_path, 'Individual_peak_plots')
+                    if not os.path.exists(ind_peak_path):
+                        os.makedirs(ind_peak_path)
+                    for plot_name, plot in ind_peak_plots.items():
+                        plot.savefig(f'{ind_peak_path}/{plot_name}.png')
+
+                if plot_ind_CCFs:
+                    if processor.num_channels == 1:
+                        log_params[
+                            'Miscellaneous'] = f'CCF plots were not generated for {file_name} because the image only has one channel'
+                    ind_ccf_plots = processor.plot_ind_ccfs()
+                    ind_ccf_path = os.path.join(
+                        im_save_path, 'Individual_CCF_plots')
+                    if not os.path.exists(ind_ccf_path):
+                        os.makedirs(ind_ccf_path)
+                    for plot_name, plot in ind_ccf_plots.items():
+                        plot.savefig(f'{ind_ccf_path}/{plot_name}.png')
+
+                if plot_mean_CCFs:
+                    mean_ccf_plots = processor.plot_mean_CCF()
+                    mean_ccf_path = os.path.join(
+                        im_save_path, 'Mean_CCF_plots')
+                    if not os.path.exists(mean_ccf_path):
+                        os.makedirs(mean_ccf_path)
+                    for plot_name, plot in mean_ccf_plots.items():
+                        plot.savefig(f'{mean_ccf_path}/{plot_name}.png')
+
+                if plot_mean_peaks:
+                    mean_peak_plots = processor.plot_mean_peak_props()
+                    mean_peaks_path = os.path.join(
+                        im_save_path, 'Mean_peak_plots')
+                    if not os.path.exists(mean_peaks_path):
+                        os.makedirs(mean_peaks_path)
+                    for plot_name, plot in mean_peak_plots.items():
+                        plot.savefig(f'{mean_peaks_path}/{plot_name}.png')
+
+                # Summarize the data for current image as dataframe, and save as .csv
+                im_measurements_df = processor.organize_measurements()
+                im_measurements_df.to_csv(
+                    f'{im_save_path}/{name_wo_ext}_measurements.csv', index=False)
+
+                # generate summary data for current image
+                im_summary_dict = processor.summarize_image(
+                    file_name=file_name)
+
+                # populate column headers list with keys from the measurements dictionary
+                for key in im_summary_dict.keys():
+                    if key not in col_headers:
+                        col_headers.append(key)
+
+                # append summary data to the summary list
+                summary_list.append(im_summary_dict)
+
+                # useless progress bar to force completion of previous bars
+                with tqdm(total=10, miniters=1) as dummy_pbar:
+                    dummy_pbar.set_description('cleanup:')
+                    for i in range(10):
+                        dummy_pbar.update(1)
+
+                pbar.update(1)
+        
+            # create dataframe from summary list
+            summary_df = pd.DataFrame(summary_list, columns=col_headers)
+            summary_df.to_csv(f'{main_save_path}/summary.csv', index=False)
+
+            end = timeit.default_timer()
+            log_params["Time Elapsed"] = f"{end - start:.2f} seconds"
+            # log parameters and errors
+            make_log(main_save_path, log_params)
+            print('Done with Script!')
 
 if __name__ == '__main__':
     main()
